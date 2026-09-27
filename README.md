@@ -7,7 +7,7 @@ dengan data harga dari **Yahoo Finance**.
 ![Dashboard](docs/dashboard_sector.png)
 
 ---
-
+https://lazybear-26hht6pudyartgik7fieeu.streamlit.app
 ## 1. Ide & Tujuan
 
 Menangkap saham yang **baru memasuki fase momentum naik**:
