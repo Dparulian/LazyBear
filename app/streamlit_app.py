@@ -1,4 +1,4 @@
-"""IDX Momentum Screener — dashboard Streamlit.
+"""Lazy Bear Screener — dashboard Streamlit.
 
 Jalankan lokal:  streamlit run app/streamlit_app.py
 """
@@ -100,11 +100,24 @@ COLUMN_CONFIG = {
 }
 
 # ---------------------------------------------------------------- data
-runs = ds.list_runs()
-if runs.empty:
+try:
+    runs = ds.list_runs()
+except Exception as exc:  # noqa: BLE001
     st.title("📈 IDX Momentum Screener")
-    st.info("Belum ada hasil screening. Jalankan workflow **Daily IDX Screener** di GitHub Actions "
-            "(atau `python -m screener.run_screener --dry-run` untuk mode lokal).")
+    st.error(f"Gagal membaca Supabase: {exc}")
+    st.stop()
+if runs.empty:
+    st.cache_data.clear()  # jangan simpan hasil kosong di cache
+    st.title("📈 IDX Momentum Screener")
+    if ds.mode() == "local":
+        st.warning("Secrets **SUPABASE_URL** / **SUPABASE_ANON_KEY** tidak terbaca, sehingga dashboard "
+                   "berjalan di mode lokal. Periksa *Manage app → Settings → Secrets* lalu reboot app.")
+    else:
+        st.info("Terhubung ke Supabase, tetapi belum ada baris `screening_runs` berstatus **success** "
+                "yang bisa dibaca. Cek status run di Supabase atau jalankan workflow **Daily IDX Screener**.")
+    st.caption(f"Mode sumber data: **{ds.mode()}**")
+    if st.button("🔄 Coba lagi"):
+        st.rerun()
     st.stop()
 
 with st.sidebar:
