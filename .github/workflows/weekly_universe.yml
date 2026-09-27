@@ -1,0 +1,34 @@
+name: Weekly Universe Refresh
+
+on:
+  schedule:
+    # Sabtu 08:00 WIB (01:00 UTC) — perbarui daftar emiten, IPO baru, delisting, sektor
+    - cron: "0 1 * * 6"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Ambil ulang sektor/industri untuk SEMUA ticker"
+        type: boolean
+        default: false
+
+jobs:
+  universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-screener.txt
+      - name: Build universe
+        run: |
+          if [ "${{ inputs.full }}" = "true" ]; then
+            python -m screener.build_universe --full
+          else
+            python -m screener.build_universe
+          fi
