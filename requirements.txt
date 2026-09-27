@@ -1,0 +1,7 @@
+# Dipakai Streamlit Community Cloud (dashboard)
+streamlit>=1.40
+pandas>=2.2
+numpy>=1.26
+yfinance>=0.2.54
+plotly>=5.24
+supabase>=2.10
