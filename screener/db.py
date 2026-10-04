@@ -64,15 +64,33 @@ def load_universe(client) -> pd.DataFrame:
     return df[df["is_active"].fillna(True)]
 
 
-def run_exists(client, run_date: date) -> bool:
+def get_run(client, run_date: date) -> dict | None:
     res = (
         client.table("screening_runs")
-        .select("run_date,status")
+        .select("*")
         .eq("run_date", run_date.isoformat())
         .execute()
         .data
     )
-    return bool(res) and res[0]["status"] == "success"
+    return res[0] if res else None
+
+
+def last_success_date(client) -> date | None:
+    res = (
+        client.table("screening_runs")
+        .select("run_date")
+        .eq("status", "success")
+        .order("run_date", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return date.fromisoformat(res[0]["run_date"]) if res else None
+
+
+def log_universe_run(client, row: dict):
+    """Catat 1 eksekusi build_universe ke tabel universe_runs (best effort)."""
+    client.table("universe_runs").insert({k: _clean(v) for k, v in row.items()}).execute()
 
 
 def previous_results(client, run_date: date) -> tuple[date | None, pd.DataFrame]:

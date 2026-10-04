@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -78,6 +79,9 @@ def apply_override(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+SOURCE: dict = {}
+
+
 def build(existing: pd.DataFrame, full: bool) -> pd.DataFrame:
     try:
         symbols = fetch_idx_symbols()
@@ -85,8 +89,11 @@ def build(existing: pd.DataFrame, full: bool) -> pd.DataFrame:
     except Exception as exc:  # noqa: BLE001
         log.error("Yahoo screener gagal (%s) — pakai seed %s", exc, SEED.name)
         symbols = pd.DataFrame()
+    SOURCE["source"] = "yahoo_screener"
     if symbols.empty:
+        SOURCE["source"] = "seed_fallback"
         symbols = pd.read_csv(SEED, dtype=str)[["ticker"]].assign(name=None)
+    SOURCE["fetched"] = len(symbols)
 
     known = existing.set_index("ticker") if not existing.empty else pd.DataFrame()
     rows = []
@@ -126,19 +133,43 @@ def main():
         return
 
     client = db.get_client(write=True)
-    existing = db.select_all(client, "stocks", "ticker,name,sector,industry")
-    df = build(existing, full=args.full)
+    started = datetime.now(timezone.utc)
+    run = {"started_at": started.isoformat(), "full_refresh": args.full, "status": "failed"}
+    try:
+        existing = db.select_all(client, "stocks", "ticker,name,sector,industry")
+        df = build(existing, full=args.full)
+        run.update({"source": SOURCE.get("source"), "fetched_count": SOURCE.get("fetched"),
+                    "existing_count": len(existing)})
 
-    # Nonaktifkan ticker yang hilang dari bursa (delisting) — hanya jika hasil fetch lengkap
-    if not existing.empty and len(df) >= 0.8 * len(existing):
-        gone = sorted(set(existing["ticker"]) - set(df["ticker"]))
-        if gone:
-            log.info("Nonaktifkan %d ticker: %s", len(gone), ", ".join(gone[:20]))
-            db.upsert(client, "stocks", [{"ticker": t, "is_active": False} for t in gone], "ticker")
+        known = set(existing["ticker"]) if not existing.empty else set()
+        new = sorted(set(df["ticker"]) - known)
+        gone: list[str] = []
+        # Nonaktifkan ticker yang hilang dari bursa (delisting) — hanya jika hasil fetch lengkap
+        if SOURCE.get("source") == "yahoo_screener" and known and len(df) >= 0.8 * len(known):
+            gone = sorted(known - set(df["ticker"]))
+            if gone:
+                log.info("Nonaktifkan %d ticker: %s", len(gone), ", ".join(gone[:20]))
+                db.upsert(client, "stocks", [{"ticker": t, "is_active": False} for t in gone], "ticker")
 
-    cols = ["ticker", "name", "sector", "industry", "source", "is_active"]
-    db.upsert(client, "stocks", db.records(df, cols), on_conflict="ticker")
-    log.info("Upsert %d saham ke tabel stocks", len(df))
+        cols = ["ticker", "name", "sector", "industry", "source", "is_active"]
+        db.upsert(client, "stocks", db.records(df, cols), on_conflict="ticker")
+        log.info("Upsert %d saham ke tabel stocks (baru: %d, nonaktif: %d, sumber: %s)",
+                 len(df), len(new), len(gone), SOURCE.get("source"))
+        run.update({"status": "success", "upserted_count": len(df), "new_count": len(new),
+                    "deactivated_count": len(gone),
+                    "message": ("IPO/baru: " + ", ".join(new[:30])) if new else None})
+        if SOURCE.get("source") == "seed_fallback":
+            run["status"] = "partial"
+            run["message"] = "Yahoo screener gagal — hanya seed yang diperbarui"
+    except Exception as exc:
+        run["message"] = str(exc)[:500]
+        raise
+    finally:
+        run["finished_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            db.log_universe_run(client, run)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Gagal menulis log universe_runs (sudah jalankan schema.sql terbaru?): %s", exc)
 
 
 if __name__ == "__main__":
