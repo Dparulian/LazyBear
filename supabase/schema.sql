@@ -29,6 +29,22 @@ create table if not exists public.screening_runs (
     message           text
 );
 
+-- 2b. Log eksekusi weekly universe refresh (1 baris per eksekusi)
+create table if not exists public.universe_runs (
+    id                 bigserial primary key,
+    started_at         timestamptz,
+    finished_at        timestamptz,
+    status             text not null check (status in ('success','partial','failed')),
+    full_refresh       boolean,
+    source             text,                      -- yahoo_screener | seed_fallback
+    existing_count     int,
+    fetched_count      int,
+    upserted_count     int,
+    new_count          int,
+    deactivated_count  int,
+    message            text
+);
+
 -- 3. Hasil screening (hanya saham yang lolos)
 create table if not exists public.screening_results (
     run_date           date not null references public.screening_runs(run_date) on delete cascade,
@@ -80,13 +96,21 @@ for each row execute function public.touch_updated_at();
 alter table public.stocks            enable row level security;
 alter table public.screening_runs    enable row level security;
 alter table public.screening_results enable row level security;
+alter table public.universe_runs     enable row level security;
 
 drop policy if exists "read stocks"  on public.stocks;
 drop policy if exists "read runs"    on public.screening_runs;
 drop policy if exists "read results" on public.screening_results;
+drop policy if exists "read universe runs" on public.universe_runs;
 create policy "read stocks"  on public.stocks            for select to anon, authenticated using (true);
 create policy "read runs"    on public.screening_runs    for select to anon, authenticated using (true);
 create policy "read results" on public.screening_results for select to anon, authenticated using (true);
+create policy "read universe runs" on public.universe_runs for select to anon, authenticated using (true);
+
+-- Pastikan role API boleh membaca (beberapa project baru tidak memberi grant otomatis)
+grant usage on schema public to anon, authenticated;
+grant select on public.stocks, public.screening_runs, public.screening_results, public.universe_runs
+  to anon, authenticated;
 
 -- View praktis: hasil run sukses terakhir
 create or replace view public.v_latest_results
@@ -94,3 +118,5 @@ with (security_invoker = true) as
 select r.*
 from public.screening_results r
 where r.run_date = (select max(run_date) from public.screening_runs where status = 'success');
+
+grant select on public.v_latest_results to anon, authenticated;
