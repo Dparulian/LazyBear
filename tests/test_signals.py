@@ -130,3 +130,41 @@ def test_screen_universe_and_sort():
     assert set(passed["ticker"]) == {"AAAA", "BBBB"}
     passed = sort_by_industry(assign_status(passed, None, as_of))
     assert list(passed["sector"]) == ["Basic Materials", "Energy"]
+
+
+# ---------------- jadwal & backfill ----------------
+from datetime import datetime, timedelta, timezone
+
+from screener.run_screener import drop_incomplete_bar, expected_trading_day, trading_dates
+
+WIB = timezone(timedelta(hours=7))
+
+
+def _wib(s):
+    return datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=WIB)
+
+
+def test_drop_intraday_bar_only_during_market_hours():
+    df = make_prices().iloc[:200]
+    last = df.index[-1]
+    prices = {"AAAA": df}
+    during = _wib(f"{last:%Y-%m-%d} 12:47")
+    after = _wib(f"{last:%Y-%m-%d} 18:05")
+    out, dropped = drop_incomplete_bar(prices, during)
+    assert dropped and out["AAAA"].index[-1] < last
+    out, dropped = drop_incomplete_bar(prices, after)
+    assert not dropped and out["AAAA"].index[-1] == last
+
+
+def test_expected_trading_day():
+    assert expected_trading_day(_wib("2026-09-28 18:05")) == date(2026, 9, 28)   # Senin malam
+    assert expected_trading_day(_wib("2026-09-28 12:00")) == date(2026, 9, 25)   # Senin siang -> Jumat
+    assert expected_trading_day(_wib("2026-10-03 06:05")) == date(2026, 10, 2)   # Sabtu pagi -> Jumat
+
+
+def test_trading_dates_ignores_stray_bars():
+    a = make_prices().iloc[:200]
+    stray = a.iloc[:150].copy()
+    stray.loc[pd.Timestamp("2030-01-01")] = stray.iloc[-1]
+    ds = trading_dates({"A": a, "B": a, "C": a, "D": stray})
+    assert date(2030, 1, 1) not in ds and ds[-1] == a.index[-1].date()
