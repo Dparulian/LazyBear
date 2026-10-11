@@ -2,12 +2,17 @@ name: Daily IDX Screener
 
 on:
   schedule:
-    # 18:05 WIB (11:05 UTC), Senin–Jumat — setelah bursa tutup & data Yahoo ter-update
-    - cron: "5 11 * * 1-5"
+    # Candle harian .JK di Yahoo baru lengkap ±tengah malam s/d pagi WIB keesokan harinya.
+    # Tiap run mem-backfill tanggal yang belum tercatat & menimpa tanggal terakhir, jadi
+    # beberapa jadwal aman dan saling melengkapi. (Hari UTC: 1-5 = Sen–Jum, 2-6 = Sel–Sab.)
+    - cron: "35 10 * * 1-5"   # 17:35 WIB Sen–Jum  (kalau Yahoo cepat)
+    - cron: "35 18 * * 1-5"   # 01:35 WIB Sel–Sab
+    - cron: "5 23 * * 1-5"    # 06:05 WIB Sel–Sab  (termasuk Sabtu pagi untuk candle Jumat)
+    - cron: "5 2 * * 2-6"     # 09:05 WIB Sel–Sab  (jaring pengaman terakhir)
   workflow_dispatch:
     inputs:
       force:
-        description: "Tulis ulang hasil untuk tanggal bursa yang sama"
+        description: "Paksa timpa walau unduhan Yahoo lebih sedikit dari run sebelumnya"
         type: boolean
         default: false
 
@@ -22,19 +27,24 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Parameter bisa diubah di Settings > Variables tanpa menyentuh kode
       MIN_AVG_VALUE_IDR: ${{ vars.MIN_AVG_VALUE_IDR || '1000000000' }}
       CROSS_LOOKBACK: ${{ vars.CROSS_LOOKBACK || '5' }}
       TZ: Asia/Jakarta
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+
       - name: Install dependencies
         run: pip install -r requirements-screener.txt
+
       - name: Unit tests
         run: python -m pytest -q
+
       - name: Run screener
         run: |
           if [ "${{ inputs.force }}" = "true" ]; then
@@ -42,6 +52,7 @@ jobs:
           else
             python -m screener.run_screener
           fi
+
       - name: Upload hasil (CSV)
         if: always()
         uses: actions/upload-artifact@v4
