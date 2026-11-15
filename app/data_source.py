@@ -88,3 +88,51 @@ def get_prices(ticker: str, period: str = "1y") -> pd.DataFrame:
         df.columns = df.columns.get_level_values(lvl)
     df.index = pd.to_datetime(df.index).tz_localize(None)
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+
+
+# ---------------- Kondisi pasar (market_daily) ----------------
+
+@st.cache_data(ttl=600, show_spinner=False)
+def list_market(limit: int = 250) -> pd.DataFrame:
+    """Riwayat kondisi pasar (IHSG + 3 pemicu + lampu). Kosong bila tabel belum ada."""
+    if mode() == "supabase":
+        try:
+            data = (_client().table("market_daily").select("*").order("run_date", desc=True)
+                    .limit(limit).execute().data)
+        except Exception:  # noqa: BLE001 - tabel belum dibuat (schema v3 belum dijalankan)
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+    else:
+        frames = [pd.read_csv(p) for p in sorted(OUT.glob("market_*.csv"), reverse=True)[:limit]]
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if df.empty:
+        return df
+    df["run_date"] = pd.to_datetime(df["run_date"]).dt.date
+    for c in ("close", "change_pct", "sma20", "ema50", "macd", "macd_signal", "macd_hist",
+              "passed_count", "passed_count_prev", "best_count", "triggers", "trend_score"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.sort_values("run_date", ascending=False).reset_index(drop=True)
+
+
+def get_market(run_date) -> dict | None:
+    m = list_market()
+    if m.empty:
+        return None
+    row = m[m["run_date"] == run_date]
+    return row.iloc[0].to_dict() if not row.empty else None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_index_prices(symbol: str = "^JKSE", period: str = "1y") -> pd.DataFrame:
+    """Harga harian IHSG dari Yahoo untuk grafik (dengan warm-up agar EMA50 akurat)."""
+    warmup = {"6mo": "2y", "1y": "2y", "2y": "5y"}.get(period, "2y")
+    df = yf.download(symbol, period=warmup, interval="1d", auto_adjust=False, actions=False,
+                     progress=False, threads=False)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if isinstance(df.columns, pd.MultiIndex):
+        lvl = 0 if "Close" in df.columns.get_level_values(0) else 1
+        df.columns = df.columns.get_level_values(lvl)
+    df.index = pd.to_datetime(df.index).tz_localize(None)
+    return df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])

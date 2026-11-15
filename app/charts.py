@@ -109,3 +109,59 @@ def history_chart(runs: pd.DataFrame) -> go.Figure:
     fig.update_layout(barmode="stack")
     fig.update_xaxes(type="category")
     return _base_layout(fig, 300)
+
+
+# ---------------- Kondisi pasar ----------------
+REGIME_COLOR = {"HIJAU": "#22c55e", "KUNING": "#f59e0b", "MERAH": "#ef4444"}
+
+
+def index_chart(prices: pd.DataFrame, market: pd.DataFrame | None, period: str = "1y") -> go.Figure:
+    """IHSG: candlestick + SMA20/EMA50 + MACD, dengan pita warna lampu pasar harian di bawahnya."""
+    ind = add_indicators(prices, CONFIG).tail(PERIOD_BARS.get(period, 252))
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        row_heights=[0.62, 0.08, 0.30],
+                        subplot_titles=(None, "Lampu pasar", f"MACD ({CONFIG.macd_fast},{CONFIG.macd_slow},{CONFIG.macd_signal})"))
+    fig.add_trace(go.Candlestick(x=ind.index, open=ind["Open"], high=ind["High"], low=ind["Low"], close=ind["Close"],
+                                 name="IHSG", increasing_line_color=C["up"], decreasing_line_color=C["down"],
+                                 increasing_fillcolor=C["up"], decreasing_fillcolor=C["down"], showlegend=False), row=1, col=1)
+    fig.add_trace(go.Scatter(x=ind.index, y=ind["sma"], name=f"SMA {CONFIG.sma_period}",
+                             line=dict(color=C["sma"], width=1.8)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=ind.index, y=ind["ema"], name=f"EMA {CONFIG.ema_period}",
+                             line=dict(color=C["ema"], width=1.8)), row=1, col=1)
+    if market is not None and not market.empty:
+        m = market.copy()
+        m["x"] = pd.to_datetime(m["run_date"])
+        m = m[m["x"] >= ind.index.min()]
+        fig.add_trace(go.Bar(x=m["x"], y=[1] * len(m), marker_color=m["regime"].map(REGIME_COLOR).fillna("#64748b"),
+                             customdata=m[["regime", "triggers", "note"]].to_numpy(),
+                             hovertemplate="%{x|%d %b}: <b>%{customdata[0]}</b> (%{customdata[1]}/3)<br>%{customdata[2]}<extra></extra>",
+                             name="Lampu", showlegend=False), row=2, col=1)
+    hist_colors = np.where(ind["macd_hist"] >= 0, "rgba(34,197,94,0.55)", "rgba(239,68,68,0.55)")
+    fig.add_trace(go.Bar(x=ind.index, y=ind["macd_hist"], marker_color=hist_colors, name="Histogram", showlegend=False), row=3, col=1)
+    fig.add_trace(go.Scatter(x=ind.index, y=ind["macd"], name="MACD", line=dict(color=C["macd"], width=1.6)), row=3, col=1)
+    fig.add_trace(go.Scatter(x=ind.index, y=ind["macd_signal"], name="Signal", line=dict(color=C["signal"], width=1.2, dash="dot")), row=3, col=1)
+    fig.add_hline(y=0, line=dict(color="rgba(226,232,240,0.6)", width=1, dash="dash"), row=3, col=1)
+    all_days = pd.bdate_range(ind.index.min(), ind.index.max())
+    holidays = all_days.difference(ind.index)
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"]), dict(values=list(holidays.strftime("%Y-%m-%d")))],
+                     rangeslider_visible=False)
+    fig.update_yaxes(title_text="IHSG", row=1, col=1)
+    fig.update_yaxes(showticklabels=False, row=2, col=1)
+    return _base_layout(fig, 680)
+
+
+def breadth_chart(market: pd.DataFrame) -> go.Figure:
+    """Jumlah saham lolos vs jumlah pola terbaik, diwarnai lampu pasar."""
+    m = market.sort_values("run_date")
+    x = pd.to_datetime(m["run_date"]).dt.strftime("%d/%m")
+    fig = go.Figure()
+    fig.add_bar(x=x, y=m["passed_count"], name="Lolos screener",
+                marker_color=m["regime"].map(REGIME_COLOR).fillna("#64748b"), opacity=0.85)
+    fig.add_trace(go.Scatter(x=x, y=m["best_count"], name="Pola terbaik", mode="lines+markers",
+                             line=dict(color=C["text"], width=1.6), marker=dict(size=5)))
+    fig.add_hline(y=CONFIG.regime_min_best, line=dict(color=C["sma"], dash="dot", width=1),
+                  annotation_text=f"min. {CONFIG.regime_min_best} pola terbaik", annotation_position="top left")
+    fig.update_xaxes(type="category")
+    _base_layout(fig, 300)
+    fig.update_layout(hovermode="x unified")
+    return fig

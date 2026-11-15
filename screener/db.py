@@ -121,3 +121,32 @@ def replace_results(client, run_date: date, rows: list[dict]):
 
 def save_run(client, row: dict):
     upsert(client, "screening_runs", [{k: _clean(v) for k, v in row.items()}], on_conflict="run_date")
+
+
+# ---------- Kondisi pasar & harga harian ----------
+
+def save_market(client, row: dict):
+    upsert(client, "market_daily", [{k: _clean(v) for k, v in row.items()}], on_conflict="run_date")
+
+
+def passed_count_before(client, run_date: date, n_days: int) -> int | None:
+    """passed_count dari run sukses ke-n sebelum run_date (untuk pemicu breadth)."""
+    res = (
+        client.table("screening_runs")
+        .select("run_date,passed_count")
+        .eq("status", "success")
+        .lt("run_date", run_date.isoformat())
+        .order("run_date", desc=True)
+        .limit(n_days)
+        .execute()
+        .data
+    )
+    if len(res) < n_days:
+        return None
+    return res[-1]["passed_count"]
+
+
+def replace_prices(client, run_date: date, rows: list[dict]):
+    client.table("daily_prices").delete().eq("trade_date", run_date.isoformat()).execute()
+    if rows:
+        upsert(client, "daily_prices", rows, on_conflict="trade_date,ticker", chunk=1000)

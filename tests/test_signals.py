@@ -168,3 +168,37 @@ def test_trading_dates_ignores_stray_bars():
     stray.loc[pd.Timestamp("2030-01-01")] = stray.iloc[-1]
     ds = trading_dates({"A": a, "B": a, "C": a, "D": stray})
     assert date(2030, 1, 1) not in ds and ds[-1] == a.index[-1].date()
+
+
+# ---------------- skor momentum & kondisi pasar ----------------
+from screener.market import index_metrics, regime
+
+
+def test_momentum_score_fields_and_suspension():
+    df, _ = cut_after_cross(make_prices(), 30)
+    m = evaluate_stock(df, CFG)
+    for k in ("dist_sma20_pct", "dist_ema50_pct", "macd_pct", "hist_rising", "suspended",
+              "pola_dasar", "pola_terbaik", "zone_score"):
+        assert k in m
+    assert m["suspended"] is False
+    assert 0 <= m["zone_score"] <= 3
+    if m["pola_terbaik"]:
+        assert m["pola_dasar"] and m["dist_sma20_pct"] >= CFG.score_dist_sma20_min
+    sus = df.copy()
+    sus.iloc[-1, sus.columns.get_loc("Volume")] = 0
+    m2 = evaluate_stock(sus, CFG)
+    assert m2["suspended"] is True and m2["pola_terbaik"] is False and m2["zone_score"] == 0
+
+
+def test_index_metrics_and_regime():
+    idx_df = make_prices(n=260)                 # tren naik di akhir -> IHSG > SMA20/EMA50, MACD > 0
+    im = index_metrics(idx_df, idx_df.index[-1].date(), CFG)
+    assert im is not None and im["trend_score"] == 3
+    r = regime(im, passed_count=50, passed_count_prev=40, best_count=6, cfg=CFG)
+    assert r["regime"] == "HIJAU" and r["triggers"] == 3
+    r = regime(im, passed_count=50, passed_count_prev=60, best_count=6, cfg=CFG)
+    assert r["regime"] == "KUNING"
+    r = regime(None, passed_count=50, passed_count_prev=None, best_count=1, cfg=CFG)
+    assert r["regime"] == "MERAH" and r["triggers"] == 0 and "IHSG" in r["note"]
+    short = index_metrics(idx_df.iloc[:30], idx_df.index[29].date(), CFG)
+    assert short is None

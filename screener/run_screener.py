@@ -27,6 +27,7 @@ import pandas as pd
 from . import db
 from .config import CONFIG, UNCLASSIFIED, ScreenerConfig
 from .data import download_prices
+from .market import download_index, index_metrics, market_row, regime
 from .signals import assign_status, evaluate_stock, sort_by_industry
 
 log = logging.getLogger("screener")
@@ -40,7 +41,10 @@ RESULT_COLUMNS = [
     "run_date", "ticker", "name", "sector", "industry", "status", "streak", "first_passed_date",
     "close", "change_pct", "sma20", "ema50", "spread_pct", "macd", "macd_signal", "macd_hist",
     "macd_state", "macd_cross_date", "cross_date", "entry_date", "days_since_cross", "volume", "avg_value_20d",
+    "dist_sma20_pct", "dist_ema50_pct", "macd_pct", "hist_rising", "suspended", "pola_dasar", "pola_terbaik",
+    "zone_score", "market_regime",
 ]
+PRICE_COLUMNS = ["trade_date", "ticker", "close", "volume", "value"]
 
 
 def screen_universe(
@@ -81,6 +85,22 @@ def _get(info, key):
     except (KeyError, TypeError):
         return None
     return None if pd.isna(v) else v
+
+
+def price_snapshot(prices: dict[str, pd.DataFrame], as_of: date) -> pd.DataFrame:
+    """Close & volume semua saham universe pada tanggal as_of (untuk tabel daily_prices)."""
+    rows = []
+    ts = pd.Timestamp(as_of)
+    for t, df in prices.items():
+        if ts not in df.index:
+            continue
+        r = df.loc[ts]
+        if pd.isna(r["Close"]):
+            continue
+        vol = 0 if pd.isna(r["Volume"]) else int(r["Volume"])
+        rows.append({"trade_date": as_of, "ticker": t, "close": float(r["Close"]), "volume": vol,
+                     "value": float(r["Close"]) * vol})
+    return pd.DataFrame(rows, columns=PRICE_COLUMNS)
 
 
 def load_universe_fallback() -> pd.DataFrame:
@@ -164,16 +184,25 @@ def run(dry_run: bool = False, force: bool = False, cfg: ScreenerConfig = CONFIG
             targets = [as_of]  # tidak ada tanggal baru -> segarkan tanggal terakhir
     log.info("Run sukses terakhir: %s | tanggal diproses: %s", last_ok, ", ".join(map(str, targets)))
 
+    # 4. Indeks IHSG untuk kondisi pasar
+    index_df = download_index(cfg)
+    if index_df.empty:
+        log.warning("Data %s tidak tersedia — kondisi pasar dihitung tanpa pemicu tren IHSG.", cfg.index_symbol)
+    else:
+        index_df, _ = drop_incomplete_bar({"idx": index_df}, now_wib)
+        index_df = index_df.get("idx", pd.DataFrame())
+
     result = pd.DataFrame()
     for d in targets:
         sliced = {t: df[df.index <= pd.Timestamp(d)] for t, df in prices.items()}
         sliced = {t: df for t, df in sliced.items() if not df.empty}
-        result = run_one(client, d, sliced, universe, len(tickers), dry_run, force, cfg)
+        result = run_one(client, d, sliced, universe, len(tickers), dry_run, force, cfg, index_df)
     return result
 
 
 def run_one(client, as_of: date, prices: dict[str, pd.DataFrame], universe: pd.DataFrame,
-            universe_count: int, dry_run: bool, force: bool, cfg: ScreenerConfig) -> pd.DataFrame:
+            universe_count: int, dry_run: bool, force: bool, cfg: ScreenerConfig,
+            index_df: pd.DataFrame | None = None) -> pd.DataFrame:
     started = datetime.now(timezone.utc)
     n_have = sum(1 for df in prices.values() if df.index[-1].date() == as_of)
 
@@ -209,19 +238,39 @@ def run_one(client, as_of: date, prices: dict[str, pd.DataFrame], universe: pd.D
                  "ticker dgn candle tgl ini: %d",
                  as_of, len(passed), n_new, len(passed) - n_new, len(exited), prev_date, n_have)
 
+        # Kondisi pasar: IHSG + breadth + jumlah pola terbaik
+        best_count = int(passed["pola_terbaik"].sum()) if not passed.empty else 0
+        if dry_run:
+            prev_count = _passed_count_csv(as_of, cfg.regime_breadth_days)
+        else:
+            prev_count = db.passed_count_before(client, as_of, cfg.regime_breadth_days)
+        idx = index_metrics(index_df, as_of, cfg) if index_df is not None else None
+        reg = regime(idx, len(passed), prev_count, best_count, cfg)
+        mrow = market_row(as_of, idx, reg, len(passed), prev_count, best_count, cfg)
+        passed["market_regime"] = reg["regime"]
+        log.info("%s | PASAR %s (%d/3 pemicu): %s | IHSG %s",
+                 as_of, reg["regime"], reg["triggers"], reg["note"],
+                 f"{idx['close']:,.0f} ({idx['change_pct']:+.2f}%)" if idx else "n/a")
+        prices_df = price_snapshot(prices, as_of)
+
         # Simpan: baris run (success) dulu karena FK, lalu hasil
         OUT.mkdir(exist_ok=True)
         passed.reindex(columns=RESULT_COLUMNS).to_csv(OUT / f"results_{as_of}.csv", index=False)
+        pd.DataFrame([mrow]).to_csv(OUT / f"market_{as_of}.csv", index=False)
         run_row.update({
             "status": "success", "finished_at": datetime.now(timezone.utc).isoformat(),
             "liquid_count": stats["liquid"], "passed_count": len(passed), "new_count": n_new,
-            "exited_count": len(exited),
+            "exited_count": len(exited), "best_count": best_count, "market_regime": reg["regime"],
             "message": f"evaluated={stats['evaluated']} stale={stats['stale']} "
-                       f"insufficient={stats['insufficient']} prev={prev_date}",
+                       f"insufficient={stats['insufficient']} prev={prev_date} regime={reg['regime']}",
         })
         if client:
             db.save_run(client, run_row)
             db.replace_results(client, as_of, db.records(passed, RESULT_COLUMNS))
+            db.save_market(client, mrow)
+            db.replace_prices(client, as_of, db.records(prices_df, PRICE_COLUMNS))
+            log.info("%s | tersimpan: %d hasil, 1 baris market_daily, %d harga harian",
+                     as_of, len(passed), len(prices_df))
         return passed
     except Exception as exc:
         run_row.update({"status": "failed", "message": str(exc)[:500],
@@ -237,6 +286,13 @@ def run_one(client, as_of: date, prices: dict[str, pd.DataFrame], universe: pd.D
 def _last_ok_csv():
     files = sorted(OUT.glob("results_*.csv"))
     return date.fromisoformat(files[-1].stem.split("_")[1]) if files else None
+
+
+def _passed_count_csv(as_of: date, n_days: int):
+    files = sorted(p for p in OUT.glob("results_*.csv") if p.stem.split("_")[1] < str(as_of))
+    if len(files) < n_days:
+        return None
+    return len(pd.read_csv(files[-n_days]))
 
 
 def _prev_from_csv(as_of: date):
@@ -256,7 +312,8 @@ def main():
                         stream=sys.stdout)
     res = run(dry_run=args.dry_run, force=args.force)
     if not res.empty:
-        cols = ["status", "ticker", "sector", "industry", "close", "days_since_cross", "macd_state"]
+        cols = ["status", "ticker", "sector", "close", "days_since_cross", "pola_terbaik", "zone_score",
+                "suspended", "market_regime"]
         print(res[cols].to_string(index=False))
 
 

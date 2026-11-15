@@ -27,6 +27,16 @@ class ScreenerConfig:
     # Setelah entry, saham tetap lolos selama SMA20 > EMA50 dan MACD > 0 (tanpa batas hari).
     cross_lookback: int = _env_int("CROSS_LOOKBACK", 5)
 
+    # --- Skor momentum per saham (pola dasar / pola terbaik / zona ideal) ---
+    score_macd_min_pct: float = _env_float("SCORE_MACD_MIN_PCT", 5.0)       # MACD >= 5% harga
+    score_dist_sma20_min: float = _env_float("SCORE_DIST_SMA20_MIN", 10.0)  # close >= 10% di atas SMA20
+    score_max_value_idr: float = _env_float("SCORE_MAX_VALUE_IDR", 50_000_000_000)  # < Rp50 M/hari
+
+    # --- Kondisi pasar (IHSG) ---
+    index_symbol: str = os.getenv("INDEX_SYMBOL", "^JKSE")
+    regime_min_best: int = _env_int("REGIME_MIN_BEST", 5)      # pemicu 3: >= N saham pola terbaik
+    regime_breadth_days: int = _env_int("REGIME_BREADTH_DAYS", 5)  # pemicu 2: jumlah lolos naik N hari
+
     # --- Filter likuiditas ---
     liquidity_window: int = _env_int("LIQUIDITY_WINDOW", 20)
     min_avg_value_idr: float = _env_float("MIN_AVG_VALUE_IDR", 1_000_000_000)  # Rp1 miliar / hari

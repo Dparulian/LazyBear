@@ -94,6 +94,21 @@ def evaluate_stock(df: pd.DataFrame, cfg: ScreenerConfig = CONFIG) -> dict | Non
 
     passed = bool(trend_valid and is_liquid)
 
+    # --- Skor momentum (hasil evaluasi 25 Sep – 13 Nov 2026, lihat docs/laporan) ---
+    vol_last = float(last["Volume"]) if not pd.isna(last["Volume"]) else 0.0
+    vol_zero_days = int((ind["Volume"].fillna(0).tail(3) == 0).sum())
+    suspended = vol_last <= 0 or vol_zero_days >= 2          # kemungkinan suspensi BEI
+    dist_sma20 = (close / float(last["sma"]) - 1) * 100
+    dist_ema50 = (close / float(last["ema"]) - 1) * 100
+    macd_pct = macd_val / close * 100 if close else 0.0
+    hist_val = float(last["macd_hist"])
+    hist_prev = float(ind["macd_hist"].iloc[-2]) if not pd.isna(ind["macd_hist"].iloc[-2]) else hist_val
+    pola_dasar = passed and dist_sma20 > 0 and macd_pct >= cfg.score_macd_min_pct \
+        and avg_value < cfg.score_max_value_idr
+    pola_terbaik = pola_dasar and hist_val > 0 and dist_sma20 >= cfg.score_dist_sma20_min and not suspended
+    # zona ideal 0–3: close 15–40% di atas SMA20, 25–40% di atas EMA50, MACD 7–10% dari harga
+    zone_score = int(15 <= dist_sma20 <= 40) + int(25 <= dist_ema50 <= 40) + int(7 <= macd_pct <= 10)
+
     return {
         "last_date": idx[-1].date() if hasattr(idx[-1], "date") else idx[-1],
         "close": close,
@@ -111,6 +126,14 @@ def evaluate_stock(df: pd.DataFrame, cfg: ScreenerConfig = CONFIG) -> dict | Non
         "volume": int(last["Volume"]) if not pd.isna(last["Volume"]) else None,
         "avg_value_20d": avg_value,
         "entry_date": _pos_date(idx, entry_pos),
+        "dist_sma20_pct": dist_sma20,
+        "dist_ema50_pct": dist_ema50,
+        "macd_pct": macd_pct,
+        "hist_rising": bool(hist_val > hist_prev),
+        "suspended": bool(suspended),
+        "pola_dasar": bool(pola_dasar),
+        "pola_terbaik": bool(pola_terbaik),
+        "zone_score": zone_score if pola_terbaik else 0,
         "is_liquid": bool(is_liquid),
         "trend_valid": bool(trend_valid),
         "passed": passed,
